@@ -24,3 +24,14 @@ export const paginationQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().valid(10, 20, 50, 100).default(20),
 });
+
+export function formatJoiError(error: Joi.ValidationError) {
+  return {
+    message: 'Validation failed.',
+    details: error.details.map((detail) => ({
+      message: detail.message,
+      path: detail.path.join('.'),
+      type: detail.type,
+    })),
+  };
+}

@@ -3,7 +3,10 @@ import 'reflect-metadata';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastify, { type FastifyInstance } from 'fastify';
+import Joi from 'joi';
 
+import { registerDatabasePlugin } from './common/database/database.plugin';
+import { formatJoiError } from './common/validation/joi';
 import { env } from './config/env';
 import { registerModules } from './modules';
 
@@ -24,7 +27,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     },
   });
 
+  await app.register(registerDatabasePlugin);
   await registerModules(app);
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof Joi.ValidationError) {
+      return reply.code(400).send(formatJoiError(error));
+    }
+
+    return reply.send(error);
+  });
 
   return app;
 }
