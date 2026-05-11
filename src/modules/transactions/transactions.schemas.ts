@@ -35,3 +35,8 @@ export const listTransactionsQuerySchema = paginationQuerySchema.keys({
 export const transactionParamsSchema = Joi.object({
   transactionId: Joi.string().uuid().required(),
 });
+
+export const transactionAttachmentParamsSchema = Joi.object({
+  transactionId: Joi.string().uuid().required(),
+  attachmentId: Joi.string().uuid().required(),
+});

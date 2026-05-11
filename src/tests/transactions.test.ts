@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { after, before, beforeEach, test } from 'node:test';
 
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from '../app';
+import { env } from '../config/env';
 import { appDataSource } from '../config/data-source';
 
 let app: FastifyInstance;
@@ -106,6 +108,29 @@ async function createTransaction(params: {
   return response;
 }
 
+async function uploadAttachment(params: { cookie: string; transactionId: string }) {
+  const boundary = `----test-${randomUUID()}`;
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\n`),
+    Buffer.from(
+      'Content-Disposition: form-data; name="file"; filename="slip.png"\r\n' +
+        'Content-Type: image/png\r\n\r\n',
+    ),
+    Buffer.from('fake-image-bytes'),
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+
+  return app.inject({
+    method: 'POST',
+    url: `/transactions/${params.transactionId}/attachments`,
+    headers: {
+      cookie: params.cookie,
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    payload: body,
+  });
+}
+
 before(async () => {
   app = await buildApp();
   await app.ready();
@@ -123,6 +148,8 @@ after(async () => {
   if (app) {
     await app.close();
   }
+
+  await rm(env.UPLOAD_DIR, { recursive: true, force: true });
 });
 
 test('creates a transaction and returns a sanitized note', async () => {
@@ -300,4 +327,72 @@ test('rejects create when category kind does not match transaction type', async 
 
   assert.equal(response.statusCode, 400, response.body);
   assert.equal(response.json().message, 'Category kind must match transaction type.');
+});
+
+test('uploads a transaction slip image and returns attachment metadata', async () => {
+  const { cookie } = await registerAndAuthenticate();
+  const account = await createAccount(cookie);
+  const category = await createCategory(cookie, 'expense');
+  const created = await createTransaction({
+    cookie,
+    accountId: account.id,
+    categoryId: category.id,
+    note: 'with slip',
+  });
+
+  assert.equal(created.statusCode, 201, created.body);
+
+  const transactionId = created.json().item.id as string;
+  const response = await uploadAttachment({ cookie, transactionId });
+
+  assert.equal(response.statusCode, 201, response.body);
+
+  const payload = response.json();
+  assert.equal(payload.item.transactionId, transactionId);
+  assert.equal(payload.item.originalFilename, 'slip.png');
+  assert.equal(payload.item.mimeType, 'image/png');
+  assert.equal(payload.item.url.includes(`/uploads/transactions/${transactionId}/`), true);
+  assert.equal(payload.transaction.attachments.length, 1);
+});
+
+test('deletes a transaction slip image and removes it from the transaction', async () => {
+  const { cookie } = await registerAndAuthenticate();
+  const account = await createAccount(cookie);
+  const category = await createCategory(cookie, 'expense');
+  const created = await createTransaction({
+    cookie,
+    accountId: account.id,
+    categoryId: category.id,
+    note: 'delete slip',
+  });
+
+  assert.equal(created.statusCode, 201, created.body);
+
+  const transactionId = created.json().item.id as string;
+  const uploaded = await uploadAttachment({ cookie, transactionId });
+  assert.equal(uploaded.statusCode, 201, uploaded.body);
+
+  const attachmentId = uploaded.json().item.id as string;
+  const deleted = await app.inject({
+    method: 'DELETE',
+    url: `/transactions/${transactionId}/attachments/${attachmentId}`,
+    headers: {
+      cookie,
+    },
+  });
+
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal(deleted.json().message, 'Transaction attachment deleted successfully.');
+  assert.equal(deleted.json().transaction.attachments.length, 0);
+
+  const fetched = await app.inject({
+    method: 'GET',
+    url: `/transactions/${transactionId}`,
+    headers: {
+      cookie,
+    },
+  });
+
+  assert.equal(fetched.statusCode, 200, fetched.body);
+  assert.equal(fetched.json().item.attachments.length, 0);
 });

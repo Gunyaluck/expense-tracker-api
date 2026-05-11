@@ -1,3 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+
+import type { MultipartFile } from '@fastify/multipart';
 import type { FastifyPluginAsync } from 'fastify';
 
 import { requireSession } from '../../common/auth/session.guard';
@@ -5,19 +13,36 @@ import { buildPaginationMeta, normalizePagination } from '../../common/paginatio
 import { maskProfanity } from '../../common/utils/profanity';
 import { validateRequestPart } from '../../common/validation/joi';
 import { appDataSource } from '../../config/data-source';
+import { env } from '../../config/env';
 import { AccountEntity } from '../../database/entities/account.entity';
 import { CategoryEntity } from '../../database/entities/category.entity';
+import { TransactionAttachmentEntity } from '../../database/entities/transaction-attachment.entity';
 import { TransactionEntity } from '../../database/entities/transaction.entity';
 import { TransactionType } from '../../database/enums/transaction-type.enum';
 import {
   createTransactionBodySchema,
   listTransactionsQuerySchema,
+  transactionAttachmentParamsSchema,
   transactionParamsSchema,
   updateTransactionBodySchema,
 } from './transactions.schemas';
 
 function toMoneyString(amount: number): string {
   return amount.toFixed(2);
+}
+
+function serializeAttachment(attachment: TransactionAttachmentEntity) {
+  return {
+    id: attachment.id,
+    transactionId: attachment.transactionId,
+    storageKey: attachment.storageKey,
+    originalFilename: attachment.originalFilename,
+    mimeType: attachment.mimeType,
+    fileSize: attachment.fileSize,
+    url: `/uploads/${attachment.storageKey}`,
+    createdAt: attachment.createdAt,
+    updatedAt: attachment.updatedAt,
+  };
 }
 
 function serializeTransaction(transaction: TransactionEntity) {
@@ -32,6 +57,7 @@ function serializeTransaction(transaction: TransactionEntity) {
     note: transaction.noteSanitized,
     createdAt: transaction.createdAt,
     updatedAt: transaction.updatedAt,
+    attachments: transaction.attachments?.map(serializeAttachment) ?? [],
     account: transaction.account
       ? {
           id: transaction.account.id,
@@ -50,6 +76,58 @@ function serializeTransaction(transaction: TransactionEntity) {
         }
       : undefined,
   };
+}
+
+function normalizeFilename(filename: string): string {
+  return filename.replace(/[^a-zA-Z0-9._-]/g, '-');
+}
+
+function resolveUploadExtension(file: MultipartFile): string | null {
+  const fromName = path.extname(file.filename).toLowerCase();
+
+  if (fromName) {
+    return fromName;
+  }
+
+  switch (file.mimetype) {
+    case 'image/jpeg':
+      return '.jpg';
+    case 'image/png':
+      return '.png';
+    case 'image/webp':
+      return '.webp';
+    default:
+      return null;
+  }
+}
+
+async function findOwnedTransaction(transactionId: string, userId: string) {
+  return appDataSource.getRepository(TransactionEntity).findOne({
+    where: {
+      id: transactionId,
+      userId,
+    },
+    relations: {
+      account: true,
+      category: true,
+      attachments: true,
+    },
+  });
+}
+
+async function findOwnedAttachment(params: {
+  transactionId: string;
+  attachmentId: string;
+  userId: string;
+}) {
+  return appDataSource
+    .getRepository(TransactionAttachmentEntity)
+    .createQueryBuilder('attachment')
+    .innerJoinAndSelect('attachment.transaction', 'transaction')
+    .where('attachment.id = :attachmentId', { attachmentId: params.attachmentId })
+    .andWhere('attachment.transaction_id = :transactionId', { transactionId: params.transactionId })
+    .andWhere('transaction.user_id = :userId', { userId: params.userId })
+    .getOne();
 }
 
 async function resolveTransactionDependencies(params: {
@@ -162,6 +240,7 @@ export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
         relations: {
           account: true,
           category: true,
+          attachments: true,
         },
       });
 
@@ -194,6 +273,7 @@ export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
         .createQueryBuilder('transaction')
         .leftJoinAndSelect('transaction.account', 'account')
         .leftJoinAndSelect('transaction.category', 'category')
+        .leftJoinAndSelect('transaction.attachments', 'attachments')
         .where('transaction.user_id = :userId', { userId: request.session!.userId });
 
       if (query.accountId) {
@@ -259,18 +339,7 @@ export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
     },
     async (request, reply) => {
       const params = request.params as { transactionId: string };
-      const transactionRepository = appDataSource.getRepository(TransactionEntity);
-
-      const transaction = await transactionRepository.findOne({
-        where: {
-          id: params.transactionId,
-          userId: request.session!.userId,
-        },
-        relations: {
-          account: true,
-          category: true,
-        },
-      });
+      const transaction = await findOwnedTransaction(params.transactionId, request.session!.userId);
 
       if (!transaction) {
         return reply.code(404).send({
@@ -363,11 +432,121 @@ export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
         relations: {
           account: true,
           category: true,
+          attachments: true,
         },
       });
 
       return {
         item: serializeTransaction(updatedTransaction),
+      };
+    },
+  );
+
+  app.post(
+    '/:transactionId/attachments',
+    {
+      preValidation: [requireSession, validateRequestPart(transactionParamsSchema, 'params')],
+    },
+    async (request, reply) => {
+      const params = request.params as { transactionId: string };
+      const transaction = await findOwnedTransaction(params.transactionId, request.session!.userId);
+
+      if (!transaction) {
+        return reply.code(404).send({
+          message: 'Transaction not found.',
+        });
+      }
+
+      const file = await request.file();
+
+      if (!file) {
+        return reply.code(400).send({
+          message: 'Attachment file is required.',
+        });
+      }
+
+      const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+      if (!allowedMimeTypes.has(file.mimetype)) {
+        return reply.code(400).send({
+          message: 'Only JPEG, PNG, or WEBP slip images are allowed.',
+        });
+      }
+
+      const extension = resolveUploadExtension(file);
+
+      if (!extension) {
+        return reply.code(400).send({
+          message: 'Could not determine file extension for upload.',
+        });
+      }
+
+      const originalFilename = normalizeFilename(file.filename || `slip${extension}`);
+      const storageKey = path.posix.join(
+        'transactions',
+        transaction.id,
+        `${randomUUID()}${extension}`,
+      );
+      const absolutePath = path.join(env.UPLOAD_DIR, ...storageKey.split('/'));
+
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await pipeline(file.file, createWriteStream(absolutePath));
+
+      const attachmentRepository = appDataSource.getRepository(TransactionAttachmentEntity);
+      const attachment = attachmentRepository.create({
+        transactionId: transaction.id,
+        storageKey,
+        originalFilename,
+        mimeType: file.mimetype,
+        fileSize: Number(file.file.bytesRead),
+      });
+
+      await attachmentRepository.save(attachment);
+
+      const updatedTransaction = await findOwnedTransaction(transaction.id, request.session!.userId);
+
+      return reply.code(201).send({
+        item: serializeAttachment(attachment),
+        transaction: updatedTransaction ? serializeTransaction(updatedTransaction) : undefined,
+      });
+    },
+  );
+
+  app.delete(
+    '/:transactionId/attachments/:attachmentId',
+    {
+      preValidation: [
+        requireSession,
+        validateRequestPart(transactionAttachmentParamsSchema, 'params'),
+      ],
+    },
+    async (request, reply) => {
+      const params = request.params as { transactionId: string; attachmentId: string };
+      const attachment = await findOwnedAttachment({
+        transactionId: params.transactionId,
+        attachmentId: params.attachmentId,
+        userId: request.session!.userId,
+      });
+
+      if (!attachment) {
+        return reply.code(404).send({
+          message: 'Transaction attachment not found.',
+        });
+      }
+
+      const absolutePath = path.join(env.UPLOAD_DIR, ...attachment.storageKey.split('/'));
+
+      await rm(absolutePath, { force: true });
+      await appDataSource.getRepository(TransactionAttachmentEntity).remove(attachment);
+
+      const updatedTransaction = await findOwnedTransaction(
+        params.transactionId,
+        request.session!.userId,
+      );
+
+      return {
+        message: 'Transaction attachment deleted successfully.',
+        transaction: updatedTransaction ? serializeTransaction(updatedTransaction) : undefined,
       };
     },
   );
