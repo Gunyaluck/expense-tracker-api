@@ -15,6 +15,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: env.NODE_ENV !== 'test',
   });
 
+  app.get('/health', async () => ({
+    status: 'ok',
+  }));
+
   await app.register(cors, {
     origin: true,
     credentials: true,

@@ -1,15 +1,11 @@
-import { SESSION_PAGE_SIZES } from '../auth/session.constants';
-
-export type AllowedPageSize = (typeof SESSION_PAGE_SIZES)[number];
-
 export interface PaginationQuery {
   page?: number;
-  pageSize?: AllowedPageSize;
+  pageSize?: number;
 }
 
 export interface PaginationMeta {
   page: number;
-  pageSize: AllowedPageSize;
+  pageSize: number;
   totalItems: number;
   totalPages: number;
   hasNextPage: boolean;
@@ -23,9 +19,8 @@ export interface PaginatedResult<T> {
 
 export function normalizePagination(query: PaginationQuery): Required<PaginationQuery> {
   const page = Math.max(query.page ?? 1, 1);
-  const pageSize = SESSION_PAGE_SIZES.includes(query.pageSize ?? 20)
-    ? (query.pageSize ?? 20)
-    : 20;
+  const requestedPageSize = query.pageSize ?? 20;
+  const pageSize = Math.min(Math.max(requestedPageSize, 1), 100);
 
   return { page, pageSize };
 }

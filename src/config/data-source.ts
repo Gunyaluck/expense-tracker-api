@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { DataSource } from 'typeorm';
 
 import { env } from './env';
@@ -23,5 +25,6 @@ export const appDataSource = new DataSource({
     TransactionAttachmentEntity,
     SessionEntity,
   ],
-  migrations: ['src/database/migrations/*.{ts,js}'],
+  migrations: [path.join(__dirname, '..', 'database', 'migrations', '*.{ts,js}')],
+  migrationsTableName: 'typeorm_migrations',
 });

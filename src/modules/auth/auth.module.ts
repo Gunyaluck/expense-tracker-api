@@ -147,8 +147,4 @@ export const registerAuthModule: FastifyPluginAsync = async (app) => {
       });
     },
   );
-
-  app.get('/health', async () => ({
-    status: 'ok',
-  }));
 };
