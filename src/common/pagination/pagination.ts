@@ -1,3 +1,5 @@
+import { PAGE_SIZES } from '../validation/joi';
+
 export interface PaginationQuery {
   page?: number;
   pageSize?: number;
@@ -20,7 +22,9 @@ export interface PaginatedResult<T> {
 export function normalizePagination(query: PaginationQuery): Required<PaginationQuery> {
   const page = Math.max(query.page ?? 1, 1);
   const requestedPageSize = query.pageSize ?? 20;
-  const pageSize = Math.min(Math.max(requestedPageSize, 1), 100);
+  const pageSize = PAGE_SIZES.includes(requestedPageSize as (typeof PAGE_SIZES)[number])
+    ? requestedPageSize
+    : 20;
 
   return { page, pageSize };
 }

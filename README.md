@@ -23,7 +23,7 @@ The project focuses on practical backend fundamentals expected in a junior backe
 - Profanity masking in transaction notes
 - Filterable transaction listing
 - Summary reports grouped by day, month, or year
-- Pagination support for list endpoints
+- Pagination support for list endpoints with page sizes `10`, `20`, `50`, or `100`
 
 ## Tech Stack
 

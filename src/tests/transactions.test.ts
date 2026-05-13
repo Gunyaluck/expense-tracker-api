@@ -92,7 +92,7 @@ test('lists transactions with filters and pagination metadata', async () => {
 
   const response = await app.inject({
     method: 'GET',
-    url: `/transactions?page=1&pageSize=1&month=5&year=2026&accountId=${cashAccount.id}&categoryId=${expenseCategory.id}&type=expense`,
+    url: `/transactions?page=1&pageSize=10&month=5&year=2026&accountId=${cashAccount.id}&categoryId=${expenseCategory.id}&type=expense`,
     headers: {
       cookie,
     },
@@ -101,16 +101,31 @@ test('lists transactions with filters and pagination metadata', async () => {
   assert.equal(response.statusCode, 200, response.body);
 
   const payload = response.json();
-  assert.equal(payload.items.length, 1);
+  assert.equal(payload.items.length, 2);
   assert.equal(payload.items[0].accountId, cashAccount.id);
   assert.equal(payload.items[0].categoryId, expenseCategory.id);
   assert.equal(payload.items[0].type, 'expense');
   assert.equal(payload.meta.page, 1);
-  assert.equal(payload.meta.pageSize, 1);
+  assert.equal(payload.meta.pageSize, 10);
   assert.equal(payload.meta.totalItems, 2);
-  assert.equal(payload.meta.totalPages, 2);
-  assert.equal(payload.meta.hasNextPage, true);
+  assert.equal(payload.meta.totalPages, 1);
+  assert.equal(payload.meta.hasNextPage, false);
   assert.equal(payload.meta.hasPreviousPage, false);
+});
+
+test('rejects unsupported transaction page size values', async () => {
+  const { cookie } = await registerAndAuthenticate({ app });
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/transactions?page=1&pageSize=1',
+    headers: {
+      cookie,
+    },
+  });
+
+  assert.equal(response.statusCode, 400, response.body);
+  assert.equal(response.json().message, '"pageSize" must be one of [10, 20, 50, 100]');
 });
 
 test('updates a transaction and re-masks note content', async () => {
