@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, test } from 'node:test';
 
+import ExcelJS from 'exceljs';
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from '../app';
@@ -140,4 +141,115 @@ test('supports report summary filtered by transaction type', async () => {
   assert.equal(payload.totals.transactionCount, 1);
   assert.equal(payload.items.length, 1);
   assert.equal(payload.items[0].period, '2026-02');
+});
+
+test('exports report summary as csv and excel', async () => {
+  const { cookie } = await registerAndAuthenticate({ app, displayName: 'Export User' });
+  const account = await createAccount({ app, cookie, name: `Export ${randomUUID()}` });
+  const category = await createCategory({ app, cookie, name: `Meals ${randomUUID()}`, kind: 'expense' });
+
+  await createTransaction({
+    app,
+    cookie,
+    accountId: account.id,
+    categoryId: category.id,
+    type: 'expense',
+    amount: 75,
+    occurredAt: '2026-05-12T10:00:00.000Z',
+  });
+
+  const csvResponse = await app.inject({
+    method: 'GET',
+    url: '/reports/summary/export?groupBy=day&month=5&year=2026&format=csv',
+    headers: { cookie },
+  });
+
+  assert.equal(csvResponse.statusCode, 200, csvResponse.body);
+  assert.match(csvResponse.headers['content-type'] as string, /text\/csv/);
+  assert.match(csvResponse.body, /period,incomeTotal,expenseTotal,netTotal,transactionCount/);
+  assert.match(csvResponse.body, /2026-05-12,0.00,75.00,-75.00,1/);
+
+  const excelResponse = await app.inject({
+    method: 'GET',
+    url: '/reports/summary/export?groupBy=day&month=5&year=2026&format=excel',
+    headers: { cookie },
+  });
+
+  assert.equal(excelResponse.statusCode, 200, excelResponse.body);
+  assert.match(
+    excelResponse.headers['content-type'] as string,
+    /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/,
+  );
+
+  const workbook = new ExcelJS.Workbook();
+  const excelBuffer = Buffer.from(excelResponse.rawPayload) as unknown as Parameters<
+    typeof workbook.xlsx.load
+  >[0];
+  await workbook.xlsx.load(excelBuffer);
+  const worksheet = workbook.getWorksheet('Summary');
+
+  assert.ok(worksheet);
+  assert.equal(worksheet.getCell('A2').value, '2026-05-12');
+  assert.equal(worksheet.getCell('C2').value, '75.00');
+});
+
+test('stores monthly budget and returns daily allowance', async () => {
+  const { cookie } = await registerAndAuthenticate({ app, displayName: 'Budget User' });
+  const account = await createAccount({ app, cookie, name: `Budget ${randomUUID()}` });
+  const expenseCategory = await createCategory({ app, cookie, name: `Food ${randomUUID()}`, kind: 'expense' });
+  const incomeCategory = await createCategory({ app, cookie, name: `Salary ${randomUUID()}`, kind: 'income' });
+
+  await createTransaction({
+    app,
+    cookie,
+    accountId: account.id,
+    categoryId: incomeCategory.id,
+    type: 'income',
+    amount: 500,
+    occurredAt: '2026-05-01T10:00:00.000Z',
+  });
+  await createTransaction({
+    app,
+    cookie,
+    accountId: account.id,
+    categoryId: expenseCategory.id,
+    type: 'expense',
+    amount: 300,
+    occurredAt: '2026-05-10T10:00:00.000Z',
+  });
+
+  const budgetResponse = await app.inject({
+    method: 'PUT',
+    url: '/reports/monthly-budget',
+    headers: { cookie },
+    payload: {
+      year: 2026,
+      month: 5,
+      plannedExpenseLimit: 400,
+    },
+  });
+
+  assert.equal(budgetResponse.statusCode, 200, budgetResponse.body);
+  assert.equal(budgetResponse.json().item.plannedExpenseLimit, '400.00');
+
+  const remainingResponse = await app.inject({
+    method: 'GET',
+    url: '/reports/daily-allowance?year=2026&month=5&asOfDate=2026-05-22T00:00:00.000Z&basis=remaining',
+    headers: { cookie },
+  });
+
+  assert.equal(remainingResponse.statusCode, 200, remainingResponse.body);
+  assert.equal(remainingResponse.json().daysRemaining, 10);
+  assert.equal(remainingResponse.json().remainingTotal, '200.00');
+  assert.equal(remainingResponse.json().dailyAllowance, '20.00');
+
+  const budgetAllowanceResponse = await app.inject({
+    method: 'GET',
+    url: '/reports/daily-allowance?year=2026&month=5&asOfDate=2026-05-22T00:00:00.000Z&basis=budget',
+    headers: { cookie },
+  });
+
+  assert.equal(budgetAllowanceResponse.statusCode, 200, budgetAllowanceResponse.body);
+  assert.equal(budgetAllowanceResponse.json().budgetRemaining, '100.00');
+  assert.equal(budgetAllowanceResponse.json().dailyAllowance, '10.00');
 });

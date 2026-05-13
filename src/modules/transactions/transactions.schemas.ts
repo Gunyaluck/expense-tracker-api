@@ -32,6 +32,12 @@ export const listTransactionsQuerySchema = paginationQuerySchema.keys({
   toDate: Joi.date().iso().min(Joi.ref('fromDate')).optional(),
 });
 
+export const importTransactionsQuerySchema = Joi.object({
+  format: Joi.string().valid('json', 'csv', 'excel', 'googleSheet').required(),
+});
+
+export const importedTransactionSchema = createTransactionBodySchema;
+
 export const transactionParamsSchema = Joi.object({
   transactionId: Joi.string().uuid().required(),
 });

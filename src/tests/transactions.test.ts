@@ -8,6 +8,29 @@ import { cleanupTestUploads, createAccount, createCategory, createTransaction, r
 
 let app: FastifyInstance;
 
+function buildMultipartFile(params: {
+  fieldName: string;
+  filename: string;
+  contentType: string;
+  content: string | Buffer;
+}) {
+  const boundary = `----test-${Date.now()}`;
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\n`),
+    Buffer.from(
+      `Content-Disposition: form-data; name="${params.fieldName}"; filename="${params.filename}"\r\n` +
+        `Content-Type: ${params.contentType}\r\n\r\n`,
+    ),
+    Buffer.isBuffer(params.content) ? params.content : Buffer.from(params.content),
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 before(async () => {
   app = await buildApp();
   await app.ready();
@@ -222,6 +245,47 @@ test('rejects create when category kind does not match transaction type', async 
 
   assert.equal(response.statusCode, 400, response.body);
   assert.equal(response.json().message, 'Category kind must match transaction type.');
+});
+
+test('imports transactions from csv', async () => {
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const category = await createCategory({ app, cookie, kind: 'expense' });
+  const csv =
+    'accountId,categoryId,type,amount,occurredAt,note\n' +
+    `${account.id},${category.id},expense,45.50,2026-05-13T10:00:00.000Z,lunch\n`;
+  const multipart = buildMultipartFile({
+    fieldName: 'file',
+    filename: 'transactions.csv',
+    contentType: 'text/csv',
+    content: csv,
+  });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/transactions/import?format=csv',
+    headers: {
+      cookie,
+      'content-type': multipart.contentType,
+    },
+    payload: multipart.body,
+  });
+
+  assert.equal(response.statusCode, 201, response.body);
+  assert.equal(response.json().importedCount, 1);
+  assert.equal(response.json().failedCount, 0);
+  assert.equal(response.json().items[0].amount, '45.50');
+
+  const listed = await app.inject({
+    method: 'GET',
+    url: '/transactions?month=5&year=2026',
+    headers: {
+      cookie,
+    },
+  });
+
+  assert.equal(listed.statusCode, 200, listed.body);
+  assert.equal(listed.json().meta.totalItems, 1);
 });
 
 test('uploads a transaction slip image and returns attachment metadata', async () => {
