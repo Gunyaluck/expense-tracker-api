@@ -120,6 +120,40 @@ Health check endpoint:
 GET /health
 ```
 
+## Docker Setup
+
+The Docker setup starts both the API and PostgreSQL. The API container builds the TypeScript project, runs pending migrations from `dist`, then starts the server.
+
+```bash
+docker compose up --build
+```
+
+The API will be available at:
+
+```txt
+http://localhost:3000
+```
+
+The compose file uses these local defaults:
+
+- PostgreSQL database: `expense_tracker`
+- PostgreSQL user: `expense_tracker`
+- PostgreSQL password: `expense_tracker`
+- API port: `3000`
+- Upload volume: `expense_tracker_uploads`
+
+Stop the containers with:
+
+```bash
+docker compose down
+```
+
+Remove local Docker data volumes when you want a clean database and upload storage:
+
+```bash
+docker compose down -v
+```
+
 ## Available Scripts
 
 - `npm run dev` starts the development server
@@ -127,6 +161,7 @@ GET /health
 - `npm start` runs the compiled server
 - `npm test` runs the automated test suite
 - `npm run db:migrate` runs pending migrations
+- `npm run db:migrate:prod` runs compiled migrations from `dist`
 - `npm run db:migrate:revert` reverts the latest migration
 
 ## Main API Areas
@@ -194,7 +229,6 @@ This project is intended to demonstrate:
 - support object storage such as S3 for attachments
 - add report export options such as CSV or Excel
 - add monthly budget endpoints and daily spending guidance
-- add Docker-based local setup
 
 ## Current Scope
 
@@ -204,6 +238,7 @@ Implemented:
 - slip upload and deletion
 - reporting summary
 - migration workflow
+- Docker-based local setup
 - automated tests
 
 Not yet implemented:
