@@ -6,6 +6,7 @@ export const summaryQuerySchema = Joi.object({
   year: Joi.number().integer().min(2000).max(2100).optional(),
   categoryId: Joi.string().uuid().optional(),
   accountId: Joi.string().uuid().optional(),
+  type: Joi.string().valid('income', 'expense').optional(),
   fromDate: Joi.date().iso().optional(),
   toDate: Joi.date().iso().min(Joi.ref('fromDate')).optional(),
 });

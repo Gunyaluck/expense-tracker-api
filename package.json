@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "node --import tsx --import ./src/tests/setup-env.ts --test --test-concurrency=1 ./src/tests/**/*.test.ts",
+    "db:migrate": "node --import tsx src/database/run-migrations.ts",
+    "db:migrate:revert": "node --import tsx src/database/revert-migration.ts"
   },
   "keywords": [],
   "author": "",

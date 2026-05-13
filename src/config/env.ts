@@ -11,6 +11,7 @@ const envSchema = Joi.object({
   UPLOAD_DIR: Joi.string().default('uploads'),
   SESSION_SECRET: Joi.string().min(32).required(),
   SESSION_COOKIE_SECURE: Joi.boolean().truthy('true').falsy('false').default(false),
+  DEFAULT_USER_LOCALE: Joi.string().valid('en', 'th').default('th'),
 }).unknown();
 
 const { error, value } = envSchema.validate(process.env, {
