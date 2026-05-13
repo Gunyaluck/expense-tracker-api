@@ -1,4 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
+import ExcelJS from 'exceljs';
+import { parse } from 'csv-parse/sync';
+import Joi from 'joi';
 
 import { requireSession } from '../../common/auth/session.guard';
 import { buildPaginationMeta, normalizePagination } from '../../common/pagination/pagination';
@@ -7,6 +10,8 @@ import { validateRequestPart } from '../../common/validation/joi';
 import { TransactionType } from '../../database/enums/transaction-type.enum';
 import {
   createTransactionBodySchema,
+  importedTransactionSchema,
+  importTransactionsQuerySchema,
   listTransactionsQuerySchema,
   transactionAttachmentParamsSchema,
   transactionParamsSchema,
@@ -29,6 +34,73 @@ import {
   resolveTransactionDependencies,
   updateTransactionRecord,
 } from './transactions.repository';
+
+type ImportFormat = 'json' | 'csv' | 'excel' | 'googleSheet';
+type ImportedTransaction = {
+  accountId: string;
+  categoryId: string;
+  type: TransactionType;
+  amount: number;
+  occurredAt: string;
+  note?: string | null;
+};
+
+function normalizeImportRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    accountId: row.accountId,
+    categoryId: row.categoryId,
+    type: row.type,
+    amount: typeof row.amount === 'string' ? Number(row.amount) : row.amount,
+    occurredAt: row.occurredAt,
+    note: row.note ?? null,
+  };
+}
+
+async function parseImportFile(buffer: Buffer, format: ImportFormat): Promise<unknown[]> {
+  if (format === 'json') {
+    const parsed = JSON.parse(buffer.toString('utf8')) as unknown;
+
+    return Array.isArray(parsed) ? parsed : (parsed as { items?: unknown[] }).items ?? [];
+  }
+
+  if (format === 'csv' || format === 'googleSheet') {
+    return parse(buffer.toString('utf8'), {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    }) as unknown[];
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const excelBuffer = Buffer.from(buffer) as unknown as Parameters<typeof workbook.xlsx.load>[0];
+  await workbook.xlsx.load(excelBuffer);
+  const worksheet = workbook.worksheets[0];
+
+  if (!worksheet) {
+    return [];
+  }
+
+  const headerRow = worksheet.getRow(1);
+  const headers = headerRow.values as Array<string | undefined>;
+  const rows: Record<string, unknown>[] = [];
+
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) {
+      return;
+    }
+
+    const item: Record<string, unknown> = {};
+
+    headers.forEach((header, index) => {
+      if (header) {
+        item[String(header)] = row.getCell(index).value;
+      }
+    });
+    rows.push(item);
+  });
+
+  return rows;
+}
 
 export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
   app.post(
@@ -72,6 +144,95 @@ export const registerTransactionsModule: FastifyPluginAsync = async (app) => {
 
       return reply.code(201).send({
         item: transaction ? serializeTransaction(transaction) : undefined,
+      });
+    },
+  );
+
+  app.post(
+    '/import',
+    {
+      preValidation: [requireSession, validateRequestPart(importTransactionsQuerySchema, 'query')],
+    },
+    async (request, reply) => {
+      const query = request.query as { format: ImportFormat };
+      const file = await request.file();
+
+      if (!file) {
+        return reply.code(400).send({
+          message: 'Import file is required.',
+        });
+      }
+
+      let rows: unknown[];
+
+      try {
+        rows = await parseImportFile(await file.toBuffer(), query.format);
+      } catch {
+        return reply.code(400).send({
+          message: 'Could not parse import file.',
+        });
+      }
+
+      const arraySchema = Joi.array().items(importedTransactionSchema).min(1);
+      const normalizedRows = rows.map((row) => normalizeImportRow(row as Record<string, unknown>));
+      const { error, value } = arraySchema.validate(normalizedRows, {
+        abortEarly: false,
+        convert: true,
+        stripUnknown: true,
+      });
+
+      if (error) {
+        return reply.code(400).send({
+          message: 'Validation failed.',
+          details: error.details.map((detail) => ({
+            message: detail.message,
+            path: detail.path.join('.'),
+            type: detail.type,
+          })),
+        });
+      }
+
+      const created = [];
+      const errors = [];
+
+      for (const [index, payload] of (value as ImportedTransaction[]).entries()) {
+        const dependencies = await resolveTransactionDependencies({
+          userId: request.session!.userId,
+          accountId: payload.accountId,
+          categoryId: payload.categoryId,
+          type: payload.type,
+        });
+
+        if ('error' in dependencies) {
+          errors.push({
+            row: index + 1,
+            message: dependencies.error.message,
+          });
+          continue;
+        }
+
+        const normalizedNote = payload.note?.trim() || null;
+        const transaction = await createTransactionRecord({
+          userId: request.session!.userId,
+          accountId: dependencies.account.id,
+          categoryId: dependencies.category.id,
+          type: payload.type,
+          amount: payload.amount,
+          occurredAt: payload.occurredAt,
+          note: normalizedNote,
+          noteSanitized: maskProfanity(normalizedNote),
+        });
+
+        if (transaction) {
+          created.push(serializeTransaction(transaction));
+        }
+      }
+
+      return reply.code(errors.length > 0 ? 207 : 201).send({
+        importedCount: created.length,
+        failedCount: errors.length,
+        items: created,
+        errors,
       });
     },
   );
