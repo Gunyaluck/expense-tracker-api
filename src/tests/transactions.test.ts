@@ -1,135 +1,12 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import { after, before, beforeEach, test } from 'node:test';
 
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from '../app';
-import { env } from '../config/env';
-import { appDataSource } from '../config/data-source';
+import { cleanupTestUploads, createAccount, createCategory, createTransaction, registerAndAuthenticate, resetTestDatabase, uploadAttachment } from './test-helpers';
 
 let app: FastifyInstance;
-
-function readCookie(setCookieHeader: string | string[] | undefined): string {
-  const rawCookie = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
-
-  assert.ok(rawCookie, 'Expected session cookie in response headers.');
-
-  const cookie = rawCookie.split(';', 1)[0];
-  assert.ok(cookie, 'Expected a serialized cookie value.');
-
-  return cookie;
-}
-
-async function registerAndAuthenticate() {
-  const email = `test-${randomUUID()}@example.com`;
-  const password = 'Password123';
-  const response = await app.inject({
-    method: 'POST',
-    url: '/auth/register',
-    payload: {
-      displayName: 'Test User',
-      email,
-      password,
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return {
-    cookie: readCookie(response.headers['set-cookie']),
-    user: response.json().user as { id: string; email: string },
-  };
-}
-
-async function createAccount(cookie: string) {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/accounts',
-    headers: {
-      cookie,
-    },
-    payload: {
-      name: `Cash ${randomUUID()}`,
-      type: 'cash',
-      currencyCode: 'THB',
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return response.json().item as { id: string };
-}
-
-async function createCategory(cookie: string, kind: 'income' | 'expense') {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/categories',
-    headers: {
-      cookie,
-    },
-    payload: {
-      name: `${kind}-${randomUUID()}`,
-      kind,
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return response.json().item as { id: string; kind: 'income' | 'expense' };
-}
-
-async function createTransaction(params: {
-  cookie: string;
-  accountId: string;
-  categoryId: string;
-  type?: 'income' | 'expense';
-  amount?: number;
-  occurredAt?: string;
-  note?: string | null;
-}) {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/transactions',
-    headers: {
-      cookie: params.cookie,
-    },
-    payload: {
-      accountId: params.accountId,
-      categoryId: params.categoryId,
-      type: params.type ?? 'expense',
-      amount: params.amount ?? 120.5,
-      occurredAt: params.occurredAt ?? '2026-05-11T10:00:00.000Z',
-      note: params.note,
-    },
-  });
-
-  return response;
-}
-
-async function uploadAttachment(params: { cookie: string; transactionId: string }) {
-  const boundary = `----test-${randomUUID()}`;
-  const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\n`),
-    Buffer.from(
-      'Content-Disposition: form-data; name="file"; filename="slip.png"\r\n' +
-        'Content-Type: image/png\r\n\r\n',
-    ),
-    Buffer.from('fake-image-bytes'),
-    Buffer.from(`\r\n--${boundary}--\r\n`),
-  ]);
-
-  return app.inject({
-    method: 'POST',
-    url: `/transactions/${params.transactionId}/attachments`,
-    headers: {
-      cookie: params.cookie,
-      'content-type': `multipart/form-data; boundary=${boundary}`,
-    },
-    payload: body,
-  });
-}
 
 before(async () => {
   app = await buildApp();
@@ -137,11 +14,7 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  if (!appDataSource.isInitialized) {
-    await appDataSource.initialize();
-  }
-
-  await appDataSource.synchronize(true);
+  await resetTestDatabase();
 });
 
 after(async () => {
@@ -149,15 +22,16 @@ after(async () => {
     await app.close();
   }
 
-  await rm(env.UPLOAD_DIR, { recursive: true, force: true });
+  await cleanupTestUploads();
 });
 
 test('creates a transaction and returns a sanitized note', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const category = await createCategory(cookie, 'expense');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const category = await createCategory({ app, cookie, kind: 'expense' });
 
   const response = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: category.id,
@@ -176,13 +50,14 @@ test('creates a transaction and returns a sanitized note', async () => {
 });
 
 test('lists transactions with filters and pagination metadata', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const cashAccount = await createAccount(cookie);
-  const bankAccount = await createAccount(cookie);
-  const expenseCategory = await createCategory(cookie, 'expense');
-  const incomeCategory = await createCategory(cookie, 'income');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const cashAccount = await createAccount({ app, cookie });
+  const bankAccount = await createAccount({ app, cookie });
+  const expenseCategory = await createCategory({ app, cookie, kind: 'expense' });
+  const incomeCategory = await createCategory({ app, cookie, kind: 'income' });
 
   const createdOne = await createTransaction({
+    app,
     cookie,
     accountId: cashAccount.id,
     categoryId: expenseCategory.id,
@@ -193,6 +68,7 @@ test('lists transactions with filters and pagination metadata', async () => {
   assert.equal(createdOne.statusCode, 201, createdOne.body);
 
   const createdTwo = await createTransaction({
+    app,
     cookie,
     accountId: cashAccount.id,
     categoryId: expenseCategory.id,
@@ -203,6 +79,7 @@ test('lists transactions with filters and pagination metadata', async () => {
   assert.equal(createdTwo.statusCode, 201, createdTwo.body);
 
   const createdThree = await createTransaction({
+    app,
     cookie,
     accountId: bankAccount.id,
     categoryId: incomeCategory.id,
@@ -237,12 +114,13 @@ test('lists transactions with filters and pagination metadata', async () => {
 });
 
 test('updates a transaction and re-masks note content', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const oldCategory = await createCategory(cookie, 'expense');
-  const newCategory = await createCategory(cookie, 'expense');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const oldCategory = await createCategory({ app, cookie, kind: 'expense' });
+  const newCategory = await createCategory({ app, cookie, kind: 'expense' });
 
   const created = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: oldCategory.id,
@@ -275,11 +153,12 @@ test('updates a transaction and re-masks note content', async () => {
 });
 
 test('deletes a transaction and returns not found afterward', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const category = await createCategory(cookie, 'expense');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const category = await createCategory({ app, cookie, kind: 'expense' });
 
   const created = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: category.id,
@@ -313,11 +192,12 @@ test('deletes a transaction and returns not found afterward', async () => {
 });
 
 test('rejects create when category kind does not match transaction type', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const incomeCategory = await createCategory(cookie, 'income');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const incomeCategory = await createCategory({ app, cookie, kind: 'income' });
 
   const response = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: incomeCategory.id,
@@ -330,10 +210,11 @@ test('rejects create when category kind does not match transaction type', async 
 });
 
 test('uploads a transaction slip image and returns attachment metadata', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const category = await createCategory(cookie, 'expense');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const category = await createCategory({ app, cookie, kind: 'expense' });
   const created = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: category.id,
@@ -343,7 +224,7 @@ test('uploads a transaction slip image and returns attachment metadata', async (
   assert.equal(created.statusCode, 201, created.body);
 
   const transactionId = created.json().item.id as string;
-  const response = await uploadAttachment({ cookie, transactionId });
+  const response = await uploadAttachment({ app, cookie, transactionId });
 
   assert.equal(response.statusCode, 201, response.body);
 
@@ -356,10 +237,11 @@ test('uploads a transaction slip image and returns attachment metadata', async (
 });
 
 test('deletes a transaction slip image and removes it from the transaction', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie);
-  const category = await createCategory(cookie, 'expense');
+  const { cookie } = await registerAndAuthenticate({ app });
+  const account = await createAccount({ app, cookie });
+  const category = await createCategory({ app, cookie, kind: 'expense' });
   const created = await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: category.id,
@@ -369,7 +251,7 @@ test('deletes a transaction slip image and removes it from the transaction', asy
   assert.equal(created.statusCode, 201, created.body);
 
   const transactionId = created.json().item.id as string;
-  const uploaded = await uploadAttachment({ cookie, transactionId });
+  const uploaded = await uploadAttachment({ app, cookie, transactionId });
   assert.equal(uploaded.statusCode, 201, uploaded.body);
 
   const attachmentId = uploaded.json().item.id as string;

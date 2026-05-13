@@ -1,102 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import { after, before, beforeEach, test } from 'node:test';
 
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from '../app';
-import { env } from '../config/env';
-import { appDataSource } from '../config/data-source';
+import { cleanupTestUploads, createAccount, createCategory, createTransaction, registerAndAuthenticate, resetTestDatabase } from './test-helpers';
 
 let app: FastifyInstance;
-
-function readCookie(setCookieHeader: string | string[] | undefined): string {
-  const rawCookie = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
-
-  assert.ok(rawCookie, 'Expected session cookie in response headers.');
-
-  const cookie = rawCookie.split(';', 1)[0];
-  assert.ok(cookie, 'Expected a serialized cookie value.');
-
-  return cookie;
-}
-
-async function registerAndAuthenticate() {
-  const email = `test-${randomUUID()}@example.com`;
-  const password = 'Password123';
-  const response = await app.inject({
-    method: 'POST',
-    url: '/auth/register',
-    payload: {
-      displayName: 'Report User',
-      email,
-      password,
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return {
-    cookie: readCookie(response.headers['set-cookie']),
-  };
-}
-
-async function createAccount(cookie: string, name: string) {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/accounts',
-    headers: { cookie },
-    payload: {
-      name,
-      type: 'cash',
-      currencyCode: 'THB',
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return response.json().item as { id: string };
-}
-
-async function createCategory(cookie: string, name: string, kind: 'income' | 'expense') {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/categories',
-    headers: { cookie },
-    payload: { name, kind },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-
-  return response.json().item as { id: string };
-}
-
-async function createTransaction(params: {
-  cookie: string;
-  accountId: string;
-  categoryId: string;
-  type: 'income' | 'expense';
-  amount: number;
-  occurredAt: string;
-  note?: string;
-}) {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/transactions',
-    headers: { cookie: params.cookie },
-    payload: {
-      accountId: params.accountId,
-      categoryId: params.categoryId,
-      type: params.type,
-      amount: params.amount,
-      occurredAt: params.occurredAt,
-      note: params.note,
-    },
-  });
-
-  assert.equal(response.statusCode, 201, response.body);
-}
 
 before(async () => {
   app = await buildApp();
@@ -104,11 +15,7 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  if (!appDataSource.isInitialized) {
-    await appDataSource.initialize();
-  }
-
-  await appDataSource.synchronize(true);
+  await resetTestDatabase();
 });
 
 after(async () => {
@@ -116,17 +23,18 @@ after(async () => {
     await app.close();
   }
 
-  await rm(env.UPLOAD_DIR, { recursive: true, force: true });
+  await cleanupTestUploads();
 });
 
 test('returns grouped report summary with totals and filters', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const cashAccount = await createAccount(cookie, `Cash ${randomUUID()}`);
-  const bankAccount = await createAccount(cookie, `Bank ${randomUUID()}`);
-  const expenseCategory = await createCategory(cookie, `Food ${randomUUID()}`, 'expense');
-  const incomeCategory = await createCategory(cookie, `Salary ${randomUUID()}`, 'income');
+  const { cookie } = await registerAndAuthenticate({ app, displayName: 'Report User' });
+  const cashAccount = await createAccount({ app, cookie, name: `Cash ${randomUUID()}` });
+  const bankAccount = await createAccount({ app, cookie, name: `Bank ${randomUUID()}` });
+  const expenseCategory = await createCategory({ app, cookie, name: `Food ${randomUUID()}`, kind: 'expense' });
+  const incomeCategory = await createCategory({ app, cookie, name: `Salary ${randomUUID()}`, kind: 'income' });
 
   await createTransaction({
+    app,
     cookie,
     accountId: cashAccount.id,
     categoryId: expenseCategory.id,
@@ -136,6 +44,7 @@ test('returns grouped report summary with totals and filters', async () => {
     note: 'groceries',
   });
   await createTransaction({
+    app,
     cookie,
     accountId: cashAccount.id,
     categoryId: expenseCategory.id,
@@ -145,6 +54,7 @@ test('returns grouped report summary with totals and filters', async () => {
     note: 'coffee',
   });
   await createTransaction({
+    app,
     cookie,
     accountId: cashAccount.id,
     categoryId: expenseCategory.id,
@@ -154,6 +64,7 @@ test('returns grouped report summary with totals and filters', async () => {
     note: 'transport',
   });
   await createTransaction({
+    app,
     cookie,
     accountId: bankAccount.id,
     categoryId: incomeCategory.id,
@@ -190,12 +101,13 @@ test('returns grouped report summary with totals and filters', async () => {
 });
 
 test('supports report summary filtered by transaction type', async () => {
-  const { cookie } = await registerAndAuthenticate();
-  const account = await createAccount(cookie, `Primary ${randomUUID()}`);
-  const expenseCategory = await createCategory(cookie, `Bills ${randomUUID()}`, 'expense');
-  const incomeCategory = await createCategory(cookie, `Bonus ${randomUUID()}`, 'income');
+  const { cookie } = await registerAndAuthenticate({ app, displayName: 'Report User' });
+  const account = await createAccount({ app, cookie, name: `Primary ${randomUUID()}` });
+  const expenseCategory = await createCategory({ app, cookie, name: `Bills ${randomUUID()}`, kind: 'expense' });
+  const incomeCategory = await createCategory({ app, cookie, name: `Bonus ${randomUUID()}`, kind: 'income' });
 
   await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: expenseCategory.id,
@@ -204,6 +116,7 @@ test('supports report summary filtered by transaction type', async () => {
     occurredAt: '2026-01-05T10:00:00.000Z',
   });
   await createTransaction({
+    app,
     cookie,
     accountId: account.id,
     categoryId: incomeCategory.id,
