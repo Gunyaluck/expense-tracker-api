@@ -65,7 +65,6 @@ src/
   tests/
 docs/
   backend-design.md
-  requirements.pdf
 ```
 
 `app.ts` builds and configures the Fastify application. `server.ts` only starts the HTTP server. This keeps the app testable because tests can import `buildApp()` without opening a real network port.
@@ -443,5 +442,4 @@ Implemented challenge requirements:
 
 ## Documentation
 
-- Assignment PDF: `docs/requirements.pdf`
 - Backend design notes: `docs/backend-design.md`
