@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: expense-tracker-postgres
+    environment:
+      POSTGRES_USER: expense_tracker
+      POSTGRES_PASSWORD: expense_tracker
+      POSTGRES_DB: expense_tracker
+    ports:
+      - "5432:5432"
+    volumes:
+      - expense_tracker_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U expense_tracker -d expense_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+    container_name: expense-tracker-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgres://expense_tracker:expense_tracker@postgres:5432/expense_tracker
+      UPLOAD_DIR: /app/uploads
+      SESSION_SECRET: docker-development-session-secret-please-change
+      SESSION_COOKIE_SECURE: "false"
+      DEFAULT_USER_LOCALE: th
+    ports:
+      - "3000:3000"
+    volumes:
+      - expense_tracker_uploads:/app/uploads
+    command: sh -c "npm run db:migrate:prod && npm start"
+    restart: unless-stopped
+
+volumes:
+  expense_tracker_postgres_data:
+  expense_tracker_uploads:

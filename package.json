@@ -4,10 +4,40 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "node --import tsx --import ./src/tests/setup-env.ts --test --test-concurrency=1 ./src/tests/**/*.test.ts",
+    "db:migrate": "node --import tsx src/database/run-migrations.ts",
+    "db:migrate:prod": "node dist/database/run-migrations.js",
+    "db:migrate:revert": "node --import tsx src/database/revert-migration.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "type": "commonjs",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^10.0.0",
+    "@fastify/static": "^9.1.3",
+    "bcrypt": "^6.0.0",
+    "csv-parse": "^6.2.1",
+    "csv-stringify": "^6.7.0",
+    "dayjs": "^1.11.20",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "fastify": "^5.8.5",
+    "joi": "^18.2.1",
+    "nanoid": "^5.1.11",
+    "pg": "^8.20.0",
+    "typeorm": "^0.3.29"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^25.6.2",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
 }
